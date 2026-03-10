@@ -1,0 +1,224 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '릴리즈 태그명 (예: v1.0.0). 비워두면 아티팩트만 생성합니다.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  PROJECT_DIR: soft_egg_packager
+  FLUTTER_VERSION: '3.35.5'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $pubspecVersion = (Select-String -Path "${env:PROJECT_DIR}/pubspec.yaml" -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value.Trim()
+          $appVersion = $pubspecVersion.Split('+')[0]
+          $buildNumber = if ($pubspecVersion.Contains('+')) { $pubspecVersion.Split('+')[1] } else { '1' }
+
+          $releaseTag = "${{ github.event.inputs.release_tag }}"
+          if ([string]::IsNullOrWhiteSpace($releaseTag) -and "${env:GITHUB_REF_TYPE}" -eq 'tag') {
+            $releaseTag = "${env:GITHUB_REF_NAME}"
+          }
+
+          $bundleName = "SoftEgg-$appVersion-windows-x64"
+          $portableName = "SoftEggPortable-$appVersion-windows-x64.exe"
+
+          "app_version=$appVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "build_number=$buildNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "bundle_name=$bundleName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "portable_name=$portableName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Flutter pub get
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter analyze
+
+      - name: Test
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter test
+
+      - name: Build Windows app
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: >
+          flutter build windows --release --obfuscate
+          --split-debug-info=build/windows/debug-info
+          --build-name=${{ steps.meta.outputs.app_version }}
+          --build-number=${{ steps.meta.outputs.build_number }}
+
+      - name: Install Enigma Virtual Box tool
+        shell: pwsh
+        run: |
+          choco install enigmavirtualbox --no-progress -y
+
+      - name: Install EVB project generator
+        shell: pwsh
+        run: |
+          npm install --no-save generate-evb
+
+      - name: Resolve Enigma console path
+        id: enigma
+        shell: pwsh
+        run: |
+          $console = Get-ChildItem 'C:\Program Files*' -Filter 'enigmavbconsole.exe' -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+
+          if ([string]::IsNullOrWhiteSpace($console)) {
+            throw 'enigmavbconsole.exe 를 찾지 못했습니다.'
+          }
+
+          "console_path=$console" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Prepare release bundle
+        id: bundle
+        shell: pwsh
+        run: |
+          $releaseDir = Join-Path $env:PROJECT_DIR 'build/windows/x64/runner/Release'
+          $distDir = Join-Path $env:PROJECT_DIR 'dist/windows'
+          $bundleDir = Join-Path $distDir '${{ steps.meta.outputs.bundle_name }}'
+          $bundleZip = Join-Path $distDir ('${{ steps.meta.outputs.bundle_name }}' + '.zip')
+
+          Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+
+          Copy-Item "$releaseDir\*" $bundleDir -Recurse -Force
+          if (Test-Path $bundleZip) {
+            Remove-Item $bundleZip -Force
+          }
+          Compress-Archive -Path "$bundleDir\*" -DestinationPath $bundleZip -Force
+
+          "release_dir=$releaseDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "dist_dir=$distDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "bundle_zip=$bundleZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Generate Enigma project file
+        id: evb
+        shell: pwsh
+        run: |
+          $releaseDir = '${{ steps.bundle.outputs.release_dir }}'
+          $distDir = '${{ steps.bundle.outputs.dist_dir }}'
+          $portableExe = Join-Path $distDir '${{ steps.meta.outputs.portable_name }}'
+          $projectFile = Join-Path $distDir 'soft_egg_packager.evb'
+
+          if (Test-Path $portableExe) {
+            Remove-Item $portableExe -Force
+          }
+          if (Test-Path $projectFile) {
+            Remove-Item $projectFile -Force
+          }
+
+          $script = @'
+const path = require("node:path");
+const generateEvb = require("generate-evb");
+
+const projectFile = process.env.EVB_PROJECT_FILE;
+const releaseDir = process.env.EVB_RELEASE_DIR;
+const portableExe = process.env.EVB_PORTABLE_EXE;
+const inputExe = path.join(releaseDir, "soft_egg_packager.exe");
+const normalizedPortable = path.resolve(portableExe).toLowerCase();
+const normalizedProject = path.resolve(projectFile).toLowerCase();
+
+generateEvb(projectFile, inputExe, portableExe, releaseDir, {
+  filter: (fullPath, name, isDir) => {
+    if (isDir) {
+      return true;
+    }
+    const normalized = path.resolve(fullPath).toLowerCase();
+    if (normalized === normalizedPortable || normalized === normalizedProject) {
+      return false;
+    }
+    return !normalized.endsWith(".pdb");
+  },
+  evbOptions: {
+    compressFiles: false,
+    deleteExtractedOnExit: false,
+    shareVirtualSystem: false,
+    mapExecutableWithTemporaryFile: false,
+    allowRunningOfVirtualExeFiles: true
+  }
+});
+'@
+
+          $env:EVB_PROJECT_FILE = $projectFile
+          $env:EVB_RELEASE_DIR = $releaseDir
+          $env:EVB_PORTABLE_EXE = $portableExe
+          node -e $script
+
+          "project_file=$projectFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "portable_exe=$portableExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build true portable executable with Enigma Virtual Box
+        shell: pwsh
+        run: |
+          & '${{ steps.enigma.outputs.console_path }}' '${{ steps.evb.outputs.project_file }}'
+
+          if (-not (Test-Path '${{ steps.evb.outputs.portable_exe }}')) {
+            throw '포터블 EXE 생성에 실패했습니다.'
+          }
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: |
+            ${{ steps.bundle.outputs.bundle_zip }}
+            ${{ steps.evb.outputs.portable_exe }}
+          if-no-files-found: error
+
+      - name: Create or update GitHub release
+        if: ${{ steps.meta.outputs.release_tag != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $releaseTag = '${{ steps.meta.outputs.release_tag }}'
+          $releaseTitle = "SoftEgg $releaseTag"
+
+          gh release view $releaseTag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $releaseTag --title $releaseTitle --notes ""
+          }
+
+      - name: Upload release assets
+        if: ${{ steps.meta.outputs.release_tag != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload '${{ steps.meta.outputs.release_tag }}' '${{ steps.bundle.outputs.bundle_zip }}' --clobber
+          gh release upload '${{ steps.meta.outputs.release_tag }}' '${{ steps.evb.outputs.portable_exe }}' --clobber
