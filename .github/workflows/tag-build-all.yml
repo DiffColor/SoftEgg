@@ -12,6 +12,7 @@ env:
   APP_NAME: soft_egg_packager
   RELEASE_NAME: SoftEgg
   FLUTTER_VERSION: '3.35.5'
+  ENIGMA_VB_URL: https://enigmaprotector.com/assets/files/enigmavb.exe
 
 jobs:
   prepare-release:
@@ -159,7 +160,20 @@ jobs:
       - name: Install Enigma Virtual Box tool
         shell: pwsh
         run: |
-          choco install enigmavirtualbox --no-progress -y
+          $installerDir = Join-Path $env:RUNNER_TEMP 'enigma-vb'
+          $installerPath = Join-Path $installerDir 'enigmavb.exe'
+
+          New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
+          Invoke-WebRequest `
+            -Uri '${{ env.ENIGMA_VB_URL }}' `
+            -OutFile $installerPath `
+            -UserAgent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+
+          Start-Process `
+            -FilePath $installerPath `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' `
+            -Wait `
+            -NoNewWindow
 
       - name: Install EVB project generator
         shell: pwsh
