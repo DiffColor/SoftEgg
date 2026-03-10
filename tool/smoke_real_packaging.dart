@@ -16,7 +16,7 @@ Future<void> main(List<String> args) async {
     apiClient: CatalogApiClient(baseUrl: settings.apiBaseUrl),
   );
   final catalog = await repository.fetchCatalog(companyCode);
-  final selectedPackage = catalog.desktopPackages.firstWhere(
+  final selectedPackage = catalog.softwarePackages.firstWhere(
     (item) => item.mainBinary.hasUri,
     orElse: () => throw StateError('패키징 가능한 메인 바이너리가 없습니다.'),
   );

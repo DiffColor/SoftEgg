@@ -17,14 +17,6 @@ class CatalogRepository {
         statusCode: 404,
       );
     }
-    if (catalog.desktopPackages.isEmpty) {
-      throw const CatalogException(
-        message: '데스크톱 패키징 가능한 소프트웨어가 없습니다.',
-        error: 'no_desktop_software',
-        requestId: '',
-        statusCode: 404,
-      );
-    }
     return catalog;
   }
 }

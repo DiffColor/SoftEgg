@@ -259,8 +259,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       final groups = catalog.buildGroups();
       if (groups.isEmpty) {
         throw const CatalogException(
-          message: '데스크톱 패키징 가능한 소프트웨어가 없습니다.',
-          error: 'no_desktop_software',
+          message: '표시 가능한 소프트웨어가 없습니다.',
+          error: 'no_visible_software',
           requestId: '',
           statusCode: 404,
         );
@@ -293,7 +293,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       _showTopNotification(
         title: '카탈로그 조회 완료',
         message:
-            '${catalog.company.companyName}에 할당된 ${catalog.desktopPackages.length}개 패키지를 불러왔습니다.',
+            '${catalog.company.companyName}에 할당된 ${catalog.softwarePackages.length}개 패키지를 불러왔습니다.',
         icon: Icons.verified_rounded,
         accent: const Color(0xFF22C55E),
       );

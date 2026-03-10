@@ -22,15 +22,9 @@ class CompanyCatalog {
   final CompanyInfo company;
   final List<RemoteSoftwarePackage> softwarePackages;
 
-  List<RemoteSoftwarePackage> get desktopPackages {
-    return softwarePackages
-        .where((item) => item.isDesktopPackage)
-        .toList(growable: false);
-  }
-
   List<SoftwareGroupViewModel> buildGroups() {
     final groups = <String, List<RemoteSoftwarePackage>>{};
-    for (final item in desktopPackages) {
+    for (final item in softwarePackages) {
       final key =
           '${item.name}|${item.codeName}|${item.os.toLowerCase()}|${item.releaseChannel.toLowerCase()}';
       groups.putIfAbsent(key, () => <RemoteSoftwarePackage>[]).add(item);
@@ -143,13 +137,6 @@ class RemoteSoftwarePackage {
   final RemoteSoftwareBinary mainBinary;
   final List<RemoteSoftwareBinary> dependencies;
   final RemoteInstallOptions installOptions;
-
-  bool get isDesktopPackage {
-    final normalized = os.toLowerCase();
-    return normalized == 'windows' ||
-        normalized == 'macos' ||
-        normalized == 'all';
-  }
 
   bool get hasMissingDependencyUri {
     return dependencies.any((item) => !item.hasUri);
