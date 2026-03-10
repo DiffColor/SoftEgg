@@ -1,16 +1,83 @@
-# soft_egg_packager
+# SoftEgg
 
-A new Flutter project.
+SoftEgg는 회사 코드 기반으로 배포 대상 소프트웨어를 조회하고, 선택한 구성으로 패키지를 생성하는 데스크톱 패키징 도구입니다.
 
-## Getting Started
+고객사별로 다른 제품, 버전, 의존성을 반복해서 정리해야 하는 배포 작업은 쉽게 복잡해집니다. SoftEgg는 이 과정을 하나의 단계형 워크플로우로 묶어, 배포 직전의 준비 작업을 더 일관되고 확인 가능한 방식으로 처리할 수 있게 합니다.
 
-This project is a starting point for a Flutter application.
+## Why SoftEgg
 
-A few resources to get you started if this is your first Flutter project:
+배포 준비 단계에서는 보통 아래 문제가 반복됩니다.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- 고객사마다 허용된 소프트웨어 구성이 다릅니다.
+- 같은 제품이라도 버전과 포함 항목이 달라질 수 있습니다.
+- 파일 누락이나 잘못된 구성은 바로 재작업으로 이어집니다.
+- 마지막 검수 단계에서 사람이 직접 확인해야 할 항목이 많습니다.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+SoftEgg는 이 문제를 해결하기 위해 만들어졌습니다.  
+회사 코드를 입력하면 배포 가능한 소프트웨어를 확인하고, 필요한 구성만 선택해 패키징을 실행하고, 결과물을 바로 검수할 수 있습니다.
+
+## Features
+
+- 회사 코드로 배포 가능한 소프트웨어 조회
+- 제품 그룹과 버전 선택
+- 필요한 의존성 선택
+- 패키징 진행 상태 표시
+- 작업 로그 누적 및 확인
+- 완료된 패키지 정보와 포함 내역 요약
+- 결과 폴더 바로 열기
+
+## How It Works
+
+SoftEgg는 4단계 흐름으로 동작합니다.
+
+### 1. Partner Access
+
+사용자가 5자리 회사 코드를 입력하면 해당 코드에 연결된 배포 대상 정보를 조회합니다.
+
+### 2. Configuration
+
+조회된 데이터 안에서 제품, 버전, 의존성을 선택합니다.  
+이 단계에서 어떤 구성이 패키지에 포함될지 결정됩니다.
+
+### 3. Packaging
+
+선택한 구성으로 패키징을 실행합니다.  
+진행 상태와 작업 로그가 함께 표시되어 현재 어떤 단계가 처리 중인지 확인할 수 있습니다.
+
+### 4. Completion
+
+패키징이 완료되면 생성된 결과 파일, 포함된 항목, 요약 정보를 확인할 수 있습니다.  
+필요하면 바로 결과 폴더를 열어 다음 작업으로 이어갈 수 있습니다.
+
+## What You Get
+
+패키징이 완료되면 사용자는 아래 정보를 확인할 수 있습니다.
+
+- 생성된 패키지 파일
+- 메인 파일 정보
+- 포함된 의존성 목록
+- 생성 결과 요약
+- 결과 파일이 저장된 위치
+
+즉, SoftEgg는 패키지 생성뿐 아니라 결과 검수까지 하나의 흐름 안에서 다룹니다.
+
+## Typical Use Cases
+
+- 고객사별로 다른 설치 파일이나 배포 파일을 준비해야 하는 경우
+- 제품별 버전과 포함 구성을 구분해서 전달해야 하는 경우
+- 수작업 기반 패키징 과정의 누락과 혼선을 줄이고 싶은 경우
+- 배포 준비 과정을 더 명확한 절차로 표준화하고 싶은 경우
+
+## Platform
+
+SoftEgg는 Flutter 기반의 데스크톱 애플리케이션입니다.  
+프로젝트의 핵심 관심사는 데스크톱 환경에서의 패키징 워크플로우 경험입니다.
+
+## Project Goal
+
+SoftEgg의 목표는 단순합니다.
+
+배포 준비를 더 빠르게 만드는 것보다 먼저,  
+배포 준비를 더 명확하고 덜 불안하게 만드는 것.
+
+패키징 과정과 결과를 사용자가 쉽게 이해할 수 있도록 정리하는 것이 이 프로젝트의 중심입니다.
