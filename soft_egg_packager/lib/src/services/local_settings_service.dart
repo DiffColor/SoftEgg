@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -52,6 +53,9 @@ class LocalSettingsService {
   const LocalSettingsService();
 
   static const String _lastExportRootKey = 'softegg.last_export_root';
+  static const MethodChannel _securityScopedChannel = MethodChannel(
+    'softegg/security_scoped',
+  );
 
   String resolveHomeDirectory() => _resolveHomeDirectory();
   String resolveDefaultExportRoot() =>
@@ -71,6 +75,7 @@ class LocalSettingsService {
     final persistedExportRoot =
         preferences.getString(_lastExportRootKey)?.trim() ?? '';
     if (persistedExportRoot.isEmpty) {
+      await _ensureExportDirectory(baseSettings.exportRootPath);
       return baseSettings;
     }
 
@@ -78,22 +83,43 @@ class LocalSettingsService {
       persistedExportRoot,
       homeDirectory: homeDirectory,
     );
-    if (normalizedExportRoot != persistedExportRoot) {
-      await preferences.setString(_lastExportRootKey, normalizedExportRoot);
+    final accessibleExportRoot = await _restorePersistedDirectoryAccess(
+      normalizedExportRoot,
+      defaultExportRoot: baseSettings.exportRootPath,
+    );
+    if (accessibleExportRoot != persistedExportRoot) {
+      await preferences.setString(_lastExportRootKey, accessibleExportRoot);
     }
 
-    return baseSettings.copyWith(exportRootPath: normalizedExportRoot);
+    final resolvedSettings = baseSettings.copyWith(
+      exportRootPath: accessibleExportRoot,
+    );
+    await _ensureExportDirectory(resolvedSettings.exportRootPath);
+    return resolvedSettings;
   }
 
   Future<SoftEggSettings> updateExportRoot(String rawPath) async {
     final settings = await load();
+    final defaultExportRoot = resolveDefaultExportRoot();
     final normalizedPath = _normalizeExportRoot(
       rawPath,
       homeDirectory: _resolveHomeDirectory(),
     );
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString(_lastExportRootKey, normalizedPath);
-    return settings.copyWith(exportRootPath: normalizedPath);
+    if (!p.equals(settings.exportRootPath, normalizedPath)) {
+      await _clearDirectoryAccessIfNeeded(
+        settings.exportRootPath,
+        defaultExportRoot: defaultExportRoot,
+      );
+    }
+    await _rememberDirectoryAccessIfNeeded(
+      normalizedPath,
+      defaultExportRoot: defaultExportRoot,
+    );
+    final resolvedSettings = settings.copyWith(exportRootPath: normalizedPath);
+    await _ensureExportDirectory(resolvedSettings.exportRootPath);
+    return resolvedSettings;
   }
 
   Future<SoftEggSettings> resetExportRoot() async {
@@ -101,9 +127,75 @@ class LocalSettingsService {
     final homeDirectory = _resolveHomeDirectory();
     final preferences = await SharedPreferences.getInstance();
     await preferences.remove(_lastExportRootKey);
-    return settings.copyWith(
+    await _clearDirectoryAccessIfNeeded(
+      settings.exportRootPath,
+      defaultExportRoot: _resolveDefaultExportRootPath(homeDirectory),
+    );
+    final resolvedSettings = settings.copyWith(
       exportRootPath: _resolveDefaultExportRootPath(homeDirectory),
     );
+    await _ensureExportDirectory(resolvedSettings.exportRootPath);
+    return resolvedSettings;
+  }
+
+  Future<String> _restorePersistedDirectoryAccess(
+    String path, {
+    required String defaultExportRoot,
+  }) async {
+    if (!Platform.isMacOS) {
+      return path;
+    }
+    if (p.equals(path, defaultExportRoot)) {
+      return path;
+    }
+    try {
+      final restored = await _securityScopedChannel.invokeMethod<String>(
+        'restoreDirectory',
+        path,
+      );
+      return restored == null || restored.trim().isEmpty
+          ? path
+          : p.normalize(restored);
+    } on MissingPluginException {
+      return path;
+    } on PlatformException {
+      return path;
+    }
+  }
+
+  Future<void> _rememberDirectoryAccessIfNeeded(
+    String path, {
+    required String defaultExportRoot,
+  }) async {
+    if (!Platform.isMacOS || p.equals(path, defaultExportRoot)) {
+      return;
+    }
+    try {
+      await _securityScopedChannel.invokeMethod<void>('rememberDirectory', path);
+    } on MissingPluginException {
+      // noop on unsupported platforms/tests
+    }
+  }
+
+  Future<void> _clearDirectoryAccessIfNeeded(
+    String path, {
+    required String defaultExportRoot,
+  }) async {
+    if (!Platform.isMacOS || p.equals(path, defaultExportRoot)) {
+      return;
+    }
+    try {
+      await _securityScopedChannel.invokeMethod<void>('clearDirectory', path);
+    } on MissingPluginException {
+      // noop on unsupported platforms/tests
+    }
+  }
+
+  Future<void> _ensureExportDirectory(String path) async {
+    final directory = Directory(path);
+    if (!await directory.exists()) {
+      await directory.create(recursive: true);
+    }
   }
 
   String _resolveHomeDirectory() {

@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:archive/archive_io.dart';
-import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:soft_egg_packager/src/models/packaging_models.dart';
 import 'package:soft_egg_packager/src/services/checksum_service.dart';
@@ -145,6 +144,8 @@ class PackageBuilderService {
         generatedAt,
       );
       final packageFilePath = p.join(exportDirectory.path, packageFileName);
+      final tempPackageFilePath = p.join(tempRoot.path, packageFileName);
+      await _ensurePackageFileWritable(packageFilePath);
 
       onProgress(
         const PackagingProgressUpdate(
@@ -180,24 +181,55 @@ class PackageBuilderService {
       );
 
       final encoder = ZipFileEncoder();
-      encoder.create(packageFilePath);
-      await encoder.addDirectory(
-        payloadRoot,
-        includeDirName: false,
-        onProgress: (progress) {
-          onProgress(
-            PackagingProgressUpdate(
-              progress: (0.985 + (progress * 0.01)).clamp(0.985, 0.995),
-              task: '.segg 생성 중',
-              level: 'INFO',
-              message: '아카이브 구성 ${((progress * 100).clamp(0, 100)).round()}%',
-              loggable: false,
-              clearMetrics: true,
-            ),
-          );
-        },
+      try {
+        encoder.create(tempPackageFilePath);
+        await encoder.addDirectory(
+          payloadRoot,
+          includeDirName: false,
+          onProgress: (progress) {
+            onProgress(
+              PackagingProgressUpdate(
+                progress: (0.985 + (progress * 0.01)).clamp(0.985, 0.995),
+                task: '.segg 생성 중',
+                level: 'INFO',
+                message:
+                    '아카이브 구성 ${((progress * 100).clamp(0, 100)).round()}%',
+                loggable: false,
+                clearMetrics: true,
+              ),
+            );
+          },
+        );
+      } on PathAccessException catch (error) {
+        throw PackageBuildException(
+          '패키지 파일 생성에 실패했습니다: ${error.path ?? packageFilePath}',
+        );
+      } on FileSystemException catch (error) {
+        throw PackageBuildException(
+          '패키지 파일 생성에 실패했습니다: ${error.path ?? packageFilePath}',
+        );
+      } finally {
+        try {
+          await encoder.close();
+        } catch (_) {
+          // ignore close failures after archive creation errors
+        }
+      }
+
+      onProgress(
+        const PackagingProgressUpdate(
+          progress: 0.996,
+          task: '패키지 배치',
+          level: 'INFO',
+          message: '생성된 패키지를 출력 폴더로 이동합니다.',
+          clearMetrics: true,
+        ),
       );
-      await encoder.close();
+
+      await _placePackageFile(
+        sourcePath: tempPackageFilePath,
+        destinationPath: packageFilePath,
+      );
 
       final packageFile = File(packageFilePath);
       final packageSizeBytes = await packageFile.length();
@@ -235,7 +267,87 @@ class PackageBuilderService {
     if (!await directory.exists()) {
       await directory.create(recursive: true);
     }
+    await _ensureDirectoryWritable(directory);
     return directory;
+  }
+
+  Future<void> _ensureDirectoryWritable(Directory directory) async {
+    final probeFile = File(
+      p.join(
+        directory.path,
+        '.softegg-write-probe-${DateTime.now().microsecondsSinceEpoch}',
+      ),
+    );
+    try {
+      await probeFile.writeAsString('probe', flush: true);
+    } on PathAccessException catch (error) {
+      throw PackageBuildException(
+        '출력 폴더에 쓸 수 없습니다: ${error.path ?? directory.path}',
+      );
+    } on FileSystemException catch (error) {
+      throw PackageBuildException(
+        '출력 폴더에 쓸 수 없습니다: ${error.path ?? directory.path}',
+      );
+    } finally {
+      if (await probeFile.exists()) {
+        try {
+          await probeFile.delete();
+        } catch (_) {
+          // ignore cleanup failures for probe files
+        }
+      }
+    }
+  }
+
+  Future<void> _ensurePackageFileWritable(String packageFilePath) async {
+    final packageFile = File(packageFilePath);
+    if (await packageFile.exists()) {
+      try {
+        await packageFile.delete();
+      } on PathAccessException catch (error) {
+        throw PackageBuildException(
+          '기존 패키지 파일을 덮어쓸 수 없습니다: ${error.path ?? packageFilePath}',
+        );
+      } on FileSystemException catch (error) {
+        throw PackageBuildException(
+          '기존 패키지 파일을 덮어쓸 수 없습니다: ${error.path ?? packageFilePath}',
+        );
+      }
+    }
+  }
+
+  Future<void> _placePackageFile({
+    required String sourcePath,
+    required String destinationPath,
+  }) async {
+    final sourceFile = File(sourcePath);
+    final destinationFile = File(destinationPath);
+    try {
+      await sourceFile.rename(destinationPath);
+      return;
+    } on FileSystemException {
+      // fall through to copy for cross-device moves or sandbox rename issues
+    }
+
+    try {
+      await sourceFile.copy(destinationPath);
+    } on PathAccessException catch (error) {
+      throw PackageBuildException(
+        '패키지 파일을 출력 폴더에 배치하지 못했습니다: ${error.path ?? destinationPath}',
+      );
+    } on FileSystemException catch (error) {
+      throw PackageBuildException(
+        '패키지 파일을 출력 폴더에 배치하지 못했습니다: ${error.path ?? destinationPath}',
+      );
+    }
+
+    if (await destinationFile.exists()) {
+      try {
+        await sourceFile.delete();
+      } catch (_) {
+        // keep copied destination even if temp cleanup fails
+      }
+    }
   }
 
   Future<Map<String, int?>> _resolveArtifactSizes({
@@ -439,10 +551,9 @@ class PackageBuilderService {
     RemoteSoftwarePackage softwarePackage,
     DateTime timestamp,
   ) {
-    final formatter = DateFormat('yyyyMMdd_HHmmss');
-    final safeCode = _sanitizeSegment(softwarePackage.codeName);
+    final safeSoftwareName = _sanitizeSegment(softwarePackage.name);
     final safeVersion = _sanitizeSegment(softwarePackage.version);
-    return '${safeCode}_${safeVersion}_${formatter.format(timestamp)}.segg';
+    return '${safeSoftwareName}_$safeVersion.segg';
   }
 
   String _formatBytes(int value) {

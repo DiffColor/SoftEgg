@@ -235,13 +235,6 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
     return _selectedDependencies.every((item) => item.hasUri);
   }
 
-  String get _partnerCodeMasked {
-    if (_partnerCode.isEmpty) {
-      return 'SE-PRO-0000-X';
-    }
-    return 'SE-PRO-${_partnerCode.padRight(4, 'X')}-X';
-  }
-
   Future<void> _authorizePartnerCode() async {
     final settings = _settings;
     if (settings == null || !_isPartnerCodeComplete || _isCatalogLoading) {
@@ -824,6 +817,96 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
     }
 
     return rawPath;
+  }
+
+  String _presentTaskLabel(String rawTask) {
+    if (rawTask.contains('메인 바이너리')) {
+      if (rawTask.contains('재연결')) {
+        return '주요 파일 준비를 다시 시도하는 중';
+      }
+      if (rawTask.contains('체크섬')) {
+        return '주요 파일 확인 중';
+      }
+      if (rawTask.contains('완료')) {
+        return '주요 파일 준비 완료';
+      }
+      return '주요 파일 준비 중';
+    }
+    if (rawTask.contains('의존성')) {
+      if (rawTask == '의존성 없음') {
+        return '추가 구성 요소 없음';
+      }
+      if (rawTask.contains('재연결')) {
+        return '추가 구성 요소 준비를 다시 시도하는 중';
+      }
+      if (rawTask.contains('체크섬')) {
+        return '추가 구성 요소 확인 중';
+      }
+      if (rawTask.contains('완료')) {
+        return '추가 구성 요소 준비 완료';
+      }
+      return '추가 구성 요소 준비 중';
+    }
+    if (rawTask.contains('매니페스트')) {
+      return '패키지 정보 정리 중';
+    }
+    if (rawTask.contains('.segg')) {
+      return '패키지 파일 정리 중';
+    }
+    if (rawTask.contains('패키지 배치')) {
+      return '저장 위치에 패키지 배치 중';
+    }
+    if (rawTask.contains('원격 파일 정보 확인')) {
+      return '필요한 파일 정보 확인 중';
+    }
+    if (rawTask.contains('작업 디렉터리 준비')) {
+      return '작업 준비 중';
+    }
+    if (rawTask.contains('패키징 완료')) {
+      return '패키지 생성 완료';
+    }
+    return rawTask;
+  }
+
+  String _presentLogMessage(String rawMessage) {
+    if (rawMessage.contains('다운로드를 시작합니다')) {
+      return '필요한 파일을 준비하고 있습니다.';
+    }
+    if (rawMessage.contains('체크섬을 검증합니다')) {
+      return '준비한 파일을 확인하고 있습니다.';
+    }
+    if (rawMessage.contains('다운로드 및 검증이 완료되었습니다')) {
+      return '파일 준비가 완료되었습니다.';
+    }
+    if (rawMessage.contains('선택된 의존성이 없어 다음 단계로 진행합니다')) {
+      return '추가로 준비할 항목이 없어 다음 단계로 진행합니다.';
+    }
+    if (rawMessage.contains('패키지 내부 매니페스트를 작성합니다')) {
+      return '패키지 정보를 정리하고 있습니다.';
+    }
+    if (rawMessage.contains('압축 아카이브를 생성합니다')) {
+      return '패키지 파일을 만들고 있습니다.';
+    }
+    if (rawMessage.contains('아카이브 구성')) {
+      return '패키지 파일을 정리하고 있습니다.';
+    }
+    if (rawMessage.contains('원격 크기를 확인합니다')) {
+      return '필요한 파일 정보를 확인하고 있습니다.';
+    }
+    if (rawMessage.contains('FTP 다운로드에 실패했습니다')) {
+      return '파일 준비 중 연결 문제가 발생했습니다.';
+    }
+    if (rawMessage.contains('연결을 다시 시도합니다')) {
+      return '연결을 다시 시도하고 있습니다.';
+    }
+    return rawMessage
+        .replaceAll('메인 바이너리', '주요 파일')
+        .replaceAll('의존성', '추가 구성 요소')
+        .replaceAll('체크섬', '확인')
+        .replaceAll('매니페스트', '패키지 정보')
+        .replaceAll('.segg', '패키지 파일')
+        .replaceAll('FTP', '')
+        .trim();
   }
 
   void _showTopNotification({
@@ -2044,7 +2127,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
               ),
               const SizedBox(height: 8),
               Text(
-                '실제 FTP 다운로드, 체크섬 검증, .segg 생성이 이 단계에서 수행됩니다.',
+                '선택한 구성으로 패키지 파일을 준비하고 저장하는 단계입니다.',
                 style: AppFonts.sourceSans3(
                   color: const Color(0xFF94A3B8),
                   fontSize: 17,
@@ -2073,7 +2156,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                _currentTaskLabel,
+                                _presentTaskLabel(_currentTaskLabel),
                                 style: AppFonts.sourceSans3(
                                   color: Colors.white,
                                   fontSize: 22,
@@ -2121,28 +2204,28 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                       runSpacing: 10,
                       children: [
                         _statusChip(
-                          label: 'FTP Download',
+                          label: '파일 준비',
                           done:
                               _packagingProgress >= 0.90 &&
                               !_currentTaskLabel.contains('다운로드'),
                           inProgress: _currentTaskLabel.contains('다운로드'),
                         ),
                         _statusChip(
-                          label: 'Checksum Verify',
+                          label: '내용 확인',
                           done:
                               _packagingProgress >= 0.97 &&
                               !_currentTaskLabel.contains('체크섬'),
                           inProgress: _currentTaskLabel.contains('체크섬'),
                         ),
                         _statusChip(
-                          label: '.segg Archive',
+                          label: '패키지 정리',
                           done: _packagingResult != null,
                           inProgress:
                               _currentTaskLabel.contains('매니페스트') ||
                               _currentTaskLabel.contains('.segg'),
                         ),
                         _statusChip(
-                          label: 'Elapsed: ${elapsed.inSeconds}s',
+                          label: '진행 시간: ${elapsed.inSeconds}s',
                           done: false,
                           inProgress: true,
                         ),
@@ -2185,7 +2268,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                       children: [
                         _buildPanelTitle(
                           Icons.terminal_rounded,
-                          'Process Logs',
+                          '작업 내역',
                         ),
                         const Spacer(),
                         TextButton.icon(
@@ -2215,7 +2298,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                       padding: const EdgeInsets.all(14),
                       child: _logLines.isEmpty
                           ? Text(
-                              '패키징을 시작하면 로그가 표시됩니다.',
+                              '패키지 생성을 시작하면 진행 내역이 표시됩니다.',
                               style: AppFonts.jetBrainsMono(
                                 color: const Color(0xFF64748B),
                                 fontSize: 13,
@@ -2246,7 +2329,9 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                                             ),
                                           ),
                                           TextSpan(
-                                            text: log.message,
+                                            text: _presentLogMessage(
+                                              log.message,
+                                            ),
                                             style: AppFonts.jetBrainsMono(
                                               color: const Color(0xFFCBD5E1),
                                               fontSize: 12,
@@ -2275,11 +2360,11 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildPanelTitle(Icons.alt_route_rounded, 'Execution Stages'),
+          _buildPanelTitle(Icons.alt_route_rounded, '진행 단계'),
           const SizedBox(height: 12),
           _stageTile(
-            title: 'Stage 1. Download Main Binary',
-            subtitle: '메인 바이너리 수집',
+            title: '1. 주요 파일 준비',
+            subtitle: '기본 파일을 준비합니다',
             state: _resolveTaskDrivenStageState(
               isActive: _currentTaskLabel.startsWith('메인 바이너리'),
               isDone:
@@ -2288,8 +2373,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             ),
           ),
           _stageTile(
-            title: 'Stage 2. Download Dependencies',
-            subtitle: '의존성 다운로드 및 검증',
+            title: '2. 추가 구성 요소 준비',
+            subtitle: '필요한 항목을 이어서 준비합니다',
             state: _resolveTaskDrivenStageState(
               isActive:
                   _currentTaskLabel.startsWith('의존성') ||
@@ -2301,8 +2386,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             ),
           ),
           _stageTile(
-            title: 'Stage 3. Write Manifest',
-            subtitle: 'manifest/install-options 작성',
+            title: '3. 패키지 정보 정리',
+            subtitle: '설치에 필요한 정보를 정리합니다',
             state: _resolveTaskDrivenStageState(
               isActive: _currentTaskLabel.contains('매니페스트'),
               isDone:
@@ -2311,8 +2396,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             ),
           ),
           _stageTile(
-            title: 'Stage 4. Build Archive',
-            subtitle: '.segg 압축 생성',
+            title: '4. 패키지 파일 생성',
+            subtitle: '최종 패키지 파일을 만듭니다',
             state: _resolveTaskDrivenStageState(
               isActive: _currentTaskLabel.contains('.segg'),
               isDone:
@@ -2320,8 +2405,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             ),
           ),
           _stageTile(
-            title: 'Stage 5. Finalize',
-            subtitle: '결과 경로 기록 및 완료',
+            title: '5. 완료',
+            subtitle: '저장 위치를 정리하고 마무리합니다',
             state: _resolveStageState(progress, start: 1, end: 1),
             isLast: true,
           ),
@@ -2348,19 +2433,19 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildPanelTitle(Icons.podcasts_rounded, 'Runtime Telemetry'),
+          _buildPanelTitle(Icons.podcasts_rounded, '진행 정보'),
           const SizedBox(height: 12),
-          _summaryRow('Current Task', _currentTaskLabel),
-          _summaryRow('Progress', '${(_packagingProgress * 100).round()}%'),
-          _summaryRow('Logs Captured', '${_logLines.length}'),
+          _summaryRow('현재 작업', _presentTaskLabel(_currentTaskLabel)),
+          _summaryRow('진행률', '${(_packagingProgress * 100).round()}%'),
+          _summaryRow('기록 수', '${_logLines.length}'),
           _summaryRow(
-            'Dependencies',
+            '선택 항목',
             '$selectedDependencyCount / $totalDependencyCount selected',
           ),
-          _summaryRow('Transfer', transferProgress),
-          _summaryRow('Transfer Speed', transferSpeed),
-          _summaryRow('Estimated Payload', mainSize),
-          _summaryRow('Output Root', _displayPath(_settings?.exportRootPath)),
+          _summaryRow('준비 용량', transferProgress),
+          _summaryRow('진행 속도', transferSpeed),
+          _summaryRow('예상 크기', mainSize),
+          _summaryRow('저장 위치', _displayPath(_settings?.exportRootPath)),
         ],
       ),
     );
@@ -2572,18 +2657,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _buildPanelTitle(
-                              Icons.edit_note_outlined,
-                              'Editor Note',
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              '동일 파트너 코드로 다시 편집 가능합니다: $_partnerCodeMasked',
-                              style: AppFonts.sourceSans3(
-                                color: const Color(0xFFCBD5E1),
-                                fontSize: 15,
-                              ),
-                            ),
+                            
                           ],
                         ),
                       ),
