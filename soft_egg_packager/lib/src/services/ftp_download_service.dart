@@ -1,8 +1,13 @@
+// ignore_for_file: implementation_imports
+
 import 'dart:async';
 import 'dart:io';
 
 import 'package:ftpconnect/ftpconnect.dart';
 import 'package:path/path.dart' as p;
+import 'package:ftpconnect/src/ftp_reply.dart';
+import 'package:ftpconnect/src/ftp_socket.dart';
+import 'package:ftpconnect/src/utils.dart';
 import 'package:soft_egg_packager/src/services/local_settings_service.dart';
 import 'package:soft_egg_packager/src/services/packaging_cancellation.dart';
 
@@ -72,11 +77,22 @@ class FtpDownloadService {
         await destinationFile.delete();
       }
 
-      final client = _createClient(settings, target.host);
+      final socket = _createSocket(settings, target.host);
+      Socket? dataSocket;
+      IOSink? sink;
+      StreamSubscription<List<int>>? dataSubscription;
+      Completer<void>? transferCompleter;
       var cancelled = false;
       final subscription = cancellationToken?.onCancel(() {
         cancelled = true;
-        unawaited(_safeDisconnect(client));
+        dataSubscription?.cancel();
+        dataSocket?.destroy();
+        dataSocket = null;
+        unawaited(sink?.close() ?? Future<void>.value());
+        unawaited(_safeDisconnectSocket(socket));
+        if (transferCompleter != null && !transferCompleter.isCompleted) {
+          transferCompleter.completeError(const PackagingCancelledException());
+        }
       });
       final stopwatch = Stopwatch()..start();
       var lastBytes = 0;
@@ -87,17 +103,52 @@ class FtpDownloadService {
 
       try {
         cancellationToken?.throwIfCancelled();
-        await client.connect();
+        await socket.connect(settings.ftpUser, settings.ftpPassword);
         cancellationToken?.throwIfCancelled();
-        await _changeToParentDirectory(client, target.absolutePath);
+        await _changeToParentDirectorySocket(socket, target.absolutePath);
         cancellationToken?.throwIfCancelled();
-        final totalBytes = await client.sizeFile(target.fileName);
+        final totalBytes = await _sizeFile(socket, target.fileName);
         onProgress?.call(0, 0, totalBytes > 0 ? totalBytes : 0, 0);
 
-        final downloaded = await client.downloadFile(
-          target.fileName,
-          destinationFile,
-          onProgress: (progress, receivedBytes, fileSize) {
+        final response = await socket.openDataTransferChannel();
+        socket.sendCommandWithoutWaitingResponse('RETR ${target.fileName}');
+
+        final port = Utils.parsePort(response.message, socket.supportIPV6);
+        dataSocket = await Socket.connect(
+          target.host,
+          port,
+          timeout: Duration(seconds: socket.timeout),
+        );
+
+        final startResponse = await socket.readResponse();
+        final transferAccepted =
+            startResponse.isSuccessCode() ||
+            startResponse.code == 125 ||
+            startResponse.code == 150;
+        if (!transferAccepted) {
+          throw FTPConnectException(
+            'Connection refused. ',
+            startResponse.message,
+          );
+        }
+
+        sink = destinationFile.openWrite(mode: FileMode.writeOnly);
+        final activeSink = sink;
+        final doneCompleter = Completer<void>();
+        transferCompleter = doneCompleter;
+        var receivedBytes = 0;
+        final activeDataSocket = dataSocket;
+
+        dataSubscription = activeDataSocket!.listen(
+          (data) {
+            if (cancelled || cancellationToken?.isCancelled == true) {
+              return;
+            }
+            activeSink.add(data);
+            receivedBytes += data.length;
+            final progress = totalBytes > 0
+                ? ((receivedBytes / totalBytes) * 100).clamp(0, 100).toDouble()
+                : 100.0;
             final elapsedMs = stopwatch.elapsedMilliseconds;
             final deltaBytes = receivedBytes - lastBytes;
             final deltaMs = elapsedMs - lastElapsedMs;
@@ -105,29 +156,50 @@ class FtpDownloadService {
             lastBytes = receivedBytes;
             lastElapsedMs = elapsedMs;
             final shouldEmit =
-                receivedBytes == fileSize ||
+                receivedBytes == totalBytes ||
                 receivedBytes - lastReportedBytes >= _progressChunkBytes ||
                 progress - lastReportedProgress >= _progressChunkPercent ||
                 elapsedMs - lastReportedMs >= _progressChunkMilliseconds;
             if (!shouldEmit) {
               return;
             }
-            cancellationToken?.throwIfCancelled();
             lastReportedBytes = receivedBytes;
             lastReportedProgress = progress;
             lastReportedMs = elapsedMs;
-            onProgress?.call(progress, receivedBytes, fileSize, speed);
+            onProgress?.call(progress, receivedBytes, totalBytes, speed);
           },
+          onDone: () {
+            if (!doneCompleter.isCompleted) {
+              doneCompleter.complete();
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!doneCompleter.isCompleted) {
+              doneCompleter.completeError(error, stackTrace);
+            }
+          },
+          cancelOnError: true,
         );
 
-        if (!downloaded) {
-          if (cancelled || cancellationToken?.isCancelled == true) {
-            throw const PackagingCancelledException();
-          }
-          throw FtpDownloadException(
-            'FTP 다운로드에 실패했습니다: ${target.absolutePath}',
-          );
+        await doneCompleter.future;
+        transferCompleter = null;
+        await activeSink.flush();
+        await activeSink.close();
+        sink = null;
+        await activeDataSocket.close();
+        dataSocket = null;
+
+        if (cancelled || cancellationToken?.isCancelled == true) {
+          throw const PackagingCancelledException();
         }
+
+        if (!startResponse.isSuccessCode()) {
+          final endResponse = await socket.readResponse();
+          if (!endResponse.isSuccessCode()) {
+            throw FTPConnectException('Transfer Error.', endResponse.message);
+          }
+        }
+
         if (!await destinationFile.exists()) {
           if (cancelled || cancellationToken?.isCancelled == true) {
             throw const PackagingCancelledException();
@@ -172,7 +244,26 @@ class FtpDownloadService {
         lastError = error;
       } finally {
         subscription?.dispose();
-        await _safeDisconnect(client);
+        await dataSubscription?.cancel();
+        if (sink != null) {
+          final activeSink = sink;
+          try {
+            await activeSink.close();
+          } catch (_) {}
+        }
+        if (dataSocket != null) {
+          final activeDataSocket = dataSocket!;
+          try {
+            await activeDataSocket.close();
+          } catch (_) {
+            activeDataSocket.destroy();
+          }
+        }
+        if (cancelled || cancellationToken?.isCancelled == true) {
+          unawaited(_safeDisconnectSocket(socket));
+        } else {
+          await _safeDisconnectSocket(socket);
+        }
       }
 
       if (cancellationToken?.isCancelled == true) {
@@ -203,6 +294,19 @@ class FtpDownloadService {
     return client;
   }
 
+  FTPSocket _createSocket(SoftEggSettings settings, String host) {
+    final socket = FTPSocket(
+      host,
+      21,
+      SecurityType.ftp,
+      Logger(isEnabled: false),
+      30,
+    );
+    socket.transferMode = TransferMode.passive;
+    socket.supportIPV6 = false;
+    return socket;
+  }
+
   Future<void> _changeToParentDirectory(
     FTPConnect client,
     String absolutePath,
@@ -218,11 +322,50 @@ class FtpDownloadService {
     await client.setTransferType(TransferType.binary);
   }
 
+  Future<void> _changeToParentDirectorySocket(
+    FTPSocket socket,
+    String absolutePath,
+  ) async {
+    final parentDirectory = p.posix.dirname(absolutePath);
+    if (parentDirectory == '.' || parentDirectory.isEmpty) {
+      return;
+    }
+    final response = await socket.sendCommand('CWD $parentDirectory');
+    if (!response.isSuccessCode()) {
+      throw FtpDownloadException('FTP 디렉터리 이동에 실패했습니다: $parentDirectory');
+    }
+    await socket.setTransferType(TransferType.binary);
+  }
+
   Future<void> _safeDisconnect(FTPConnect client) async {
     try {
       await client.disconnect();
     } catch (_) {
       // ignore disconnect failures
+    }
+  }
+
+  Future<void> _safeDisconnectSocket(FTPSocket socket) async {
+    try {
+      await socket.disconnect();
+    } catch (_) {
+      // ignore disconnect failures
+    }
+  }
+
+  Future<int> _sizeFile(FTPSocket socket, String fileName) async {
+    try {
+      FTPReply response = await socket.sendCommand('SIZE $fileName');
+      if (!response.isSuccessCode() &&
+          socket.transferType != TransferType.binary) {
+        final transferType = socket.transferType;
+        await socket.setTransferType(TransferType.binary);
+        response = await socket.sendCommand('SIZE $fileName');
+        await socket.setTransferType(transferType);
+      }
+      return int.parse(response.message.replaceAll('213 ', ''));
+    } catch (_) {
+      return -1;
     }
   }
 

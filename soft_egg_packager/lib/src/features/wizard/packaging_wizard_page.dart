@@ -43,6 +43,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
   final List<Timer> _toastTimers = <Timer>[];
   Timer? _completionAdvanceTimer;
   PackagingCancellationToken? _packagingCancellationToken;
+  int _packagingSessionSeed = 0;
+  int? _activePackagingSessionId;
 
   late final PackageBuilderService _packageBuilderService =
       PackageBuilderService(
@@ -348,11 +350,13 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
 
     _completionAdvanceTimer?.cancel();
     final cancellationToken = PackagingCancellationToken();
+    final sessionId = ++_packagingSessionSeed;
     setState(() {
       _currentStep = 2;
       _isPackagingRunning = true;
       _isStopRequested = false;
       _packagingCancellationToken = cancellationToken;
+      _activePackagingSessionId = sessionId;
       _packagingProgress = 0.01;
       _currentTaskLabel = '작업 시작';
       _packagingStartedAt = DateTime.now();
@@ -383,7 +387,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
         softwarePackage: selectedPackage,
         selectedDependencies: _selectedDependencies,
         onProgress: (update) {
-          if (!mounted) {
+          if (!mounted || _activePackagingSessionId != sessionId) {
             return;
           }
           setState(() {
@@ -413,11 +417,15 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       if (!mounted) {
         return;
       }
+      if (_activePackagingSessionId != sessionId) {
+        return;
+      }
       setState(() {
         _packagingResult = result;
         _isPackagingRunning = false;
         _isStopRequested = false;
         _packagingCancellationToken = null;
+        _activePackagingSessionId = null;
         _packagingProgress = 1;
         _currentTaskLabel = '패키징 완료';
         _currentProcessedBytes = null;
@@ -435,12 +443,17 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       if (!mounted) {
         return;
       }
+      if (_activePackagingSessionId != sessionId &&
+          error.message == '작업이 중단되었습니다.') {
+        return;
+      }
       final wasCancelled = error.message == '작업이 중단되었습니다.';
       setState(() {
         _currentStep = wasCancelled ? 1 : 2;
         _isPackagingRunning = false;
         _isStopRequested = false;
         _packagingCancellationToken = null;
+        _activePackagingSessionId = null;
         _packagingError = wasCancelled ? null : error.message;
         _currentTaskLabel = wasCancelled ? '대기 중' : '패키징 실패';
         _packagingProgress = wasCancelled ? 0 : _packagingProgress;
@@ -466,11 +479,15 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       if (!mounted) {
         return;
       }
+      if (_activePackagingSessionId != sessionId) {
+        return;
+      }
       setState(() {
         _currentStep = 2;
         _isPackagingRunning = false;
         _isStopRequested = false;
         _packagingCancellationToken = null;
+        _activePackagingSessionId = null;
         _packagingError = '패키징 중 예기치 않은 오류가 발생했습니다.';
         _currentTaskLabel = '패키징 실패';
         _currentProcessedBytes = null;
@@ -494,13 +511,25 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
     _completionAdvanceTimer?.cancel();
     _packagingCancellationToken?.cancel();
     setState(() {
-      _isStopRequested = true;
-      _currentTaskLabel = '작업 중단 요청';
+      _currentStep = 1;
+      _activePackagingSessionId = null;
+      _isPackagingRunning = false;
+      _isStopRequested = false;
+      _packagingCancellationToken = null;
+      _packagingProgress = 0;
+      _currentTaskLabel = '대기 중';
+      _packagingStartedAt = null;
+      _elapsed = Duration.zero;
+      _currentProcessedBytes = null;
+      _currentTotalBytes = null;
+      _currentBytesPerSecond = null;
+      _packagingError = null;
+      _packagingResult = null;
+      _logLines.clear();
     });
-    _appendLog('WARN', '사용자가 작업 중단을 요청했습니다.');
     _showTopNotification(
-      title: '중단 요청 접수',
-      message: '진행 중인 작업을 안전하게 중단하고 있습니다.',
+      title: '작업 중단',
+      message: '현재 작업을 중단하고 이전 단계로 이동했습니다.',
       icon: Icons.stop_circle_outlined,
       accent: const Color(0xFFF59E0B),
     );
@@ -663,6 +692,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       _remoteSizeCache.clear();
       _remoteSizeLoadingKeys.clear();
       _packagingCancellationToken = null;
+      _activePackagingSessionId = null;
       _isStopRequested = false;
       _packagingProgress = 0;
       _currentTaskLabel = '대기 중';
@@ -698,6 +728,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       setState(() {
         _currentStep = 1;
         _packagingCancellationToken = null;
+        _activePackagingSessionId = null;
         _isStopRequested = false;
         _packagingProgress = 0;
         _currentTaskLabel = '대기 중';
@@ -721,6 +752,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
     setState(() {
       _currentStep = 1;
       _packagingCancellationToken = null;
+      _activePackagingSessionId = null;
       _isStopRequested = false;
       _packagingProgress = 0;
       _currentTaskLabel = '대기 중';
@@ -2749,7 +2781,9 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
         children: [
           if (_currentStep == 1)
             OutlinedButton.icon(
-              onPressed: _isCatalogLoading ? null : _goToPreviousStep,
+              onPressed: _isCatalogLoading || _isPackagingRunning
+                  ? null
+                  : _goToPreviousStep,
               icon: const Icon(Icons.arrow_back_rounded),
               label: const Text('Previous Step'),
             ),
