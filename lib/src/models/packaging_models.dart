@@ -28,6 +28,25 @@ class CompanyCatalog {
         .toList(growable: false);
   }
 
+  Map<String, int> get osPackageCounts {
+    final counts = <String, int>{};
+    for (final package in softwarePackages) {
+      final normalizedOs = package.os.trim().toLowerCase();
+      final key = normalizedOs.isEmpty ? 'unknown' : normalizedOs;
+      counts.update(key, (value) => value + 1, ifAbsent: () => 1);
+    }
+    return counts;
+  }
+
+  String get packageSummary {
+    final osSummary = osPackageCounts.entries.toList(growable: false)
+      ..sort((left, right) => left.key.compareTo(right.key));
+    final osLabels = osSummary
+        .map((entry) => '${entry.key}:${entry.value}')
+        .join(', ');
+    return 'total=${softwarePackages.length}, desktop=${desktopPackages.length}, os=[$osLabels]';
+  }
+
   List<SoftwareGroupViewModel> buildGroups() {
     final groups = <String, List<RemoteSoftwarePackage>>{};
     for (final item in desktopPackages) {

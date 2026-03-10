@@ -154,15 +154,19 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
         _catalogServerCheckedAt = DateTime.now();
       });
     } on CatalogException catch (error) {
+      final detailedMessage = _buildCatalogExceptionDetails(
+        error,
+        baseUrl: settings.apiBaseUrl,
+      );
       if (!mounted) {
         return;
       }
       setState(() {
         _isCatalogServerChecking = false;
-        _catalogServerError = error.message;
+        _catalogServerError = detailedMessage;
         _catalogServerCheckedAt = DateTime.now();
       });
-      _appendLog('ERROR', '카탈로그 서버 상태 확인 실패: ${error.message}');
+      _appendLog('ERROR', '카탈로그 서버 상태 확인 실패: $detailedMessage');
     } catch (error) {
       if (!mounted) {
         return;
@@ -246,6 +250,12 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       return;
     }
 
+    final requestUri = _buildCatalogRequestUri(
+      settings.apiBaseUrl,
+      _partnerCode,
+    );
+    _appendLog('INFO', '카탈로그 요청 시작: $requestUri');
+
     setState(() {
       _isCatalogLoading = true;
       _catalogError = null;
@@ -258,8 +268,9 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       final catalog = await repository.fetchCatalog(_partnerCode);
       final groups = catalog.buildGroups();
       if (groups.isEmpty) {
-        throw const CatalogException(
-          message: '데스크톱 패키징 가능한 소프트웨어가 없습니다.',
+        throw CatalogException(
+          message:
+              '데스크톱 패키징 가능한 그룹이 없습니다. baseUrl=${settings.apiBaseUrl}, companyCode=$_partnerCode, ${catalog.packageSummary}, groups=0',
           error: 'no_desktop_software',
           requestId: '',
           statusCode: 404,
@@ -298,23 +309,28 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
         accent: const Color(0xFF22C55E),
       );
     } on CatalogException catch (error) {
+      final detailedMessage = _buildCatalogExceptionDetails(
+        error,
+        baseUrl: settings.apiBaseUrl,
+        companyCode: _partnerCode,
+      );
       if (!mounted) {
         return;
       }
       setState(() {
-        _catalogError = error.message;
+        _catalogError = detailedMessage;
         _isCatalogLoading = false;
         if (error.error == 'network_error' ||
             error.error == 'timeout' ||
             error.error == 'tls_error') {
-          _catalogServerError = error.message;
+          _catalogServerError = detailedMessage;
           _catalogServerCheckedAt = DateTime.now();
         }
       });
-      _appendLog('ERROR', error.message);
+      _appendLog('ERROR', detailedMessage);
       _showTopNotification(
         title: '카탈로그 조회 실패',
-        message: error.message,
+        message: detailedMessage,
         icon: Icons.error_outline_rounded,
         accent: const Color(0xFFEF4444),
       );
@@ -929,6 +945,41 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
     }
 
     return rawPath;
+  }
+
+  String _buildCatalogRequestUri(String baseUrl, String companyCode) {
+    final normalizedBaseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final normalizedCompanyCode = companyCode.trim().toUpperCase();
+    return '$normalizedBaseUrl/api/public/software-catalog/$normalizedCompanyCode';
+  }
+
+  String _buildCatalogExceptionDetails(
+    CatalogException error, {
+    required String baseUrl,
+    String? companyCode,
+  }) {
+    final details = <String>[error.message];
+    final normalizedBaseUrl = baseUrl.trim();
+    if (normalizedBaseUrl.isNotEmpty &&
+        !error.message.contains('baseUrl=')) {
+      details.add('baseUrl=$normalizedBaseUrl');
+    }
+    final normalizedCompanyCode = companyCode?.trim().toUpperCase() ?? '';
+    if (normalizedCompanyCode.isNotEmpty &&
+        !error.message.contains('companyCode=')) {
+      details.add('companyCode=$normalizedCompanyCode');
+    }
+    if (error.statusCode > 0 && !error.message.contains('statusCode=')) {
+      details.add('statusCode=${error.statusCode}');
+    }
+    if (error.error.trim().isNotEmpty && !error.message.contains('error=')) {
+      details.add('error=${error.error}');
+    }
+    if (error.requestId.trim().isNotEmpty &&
+        !error.message.contains('requestId=')) {
+      details.add('requestId=${error.requestId}');
+    }
+    return details.join(' | ');
   }
 
   String _presentTaskLabel(String rawTask) {
