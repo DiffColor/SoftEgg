@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:ftpconnect/ftpconnect.dart';
 import 'package:path/path.dart' as p;
 import 'package:soft_egg_packager/src/services/local_settings_service.dart';
+import 'package:soft_egg_packager/src/services/packaging_cancellation.dart';
 
 class FtpDownloadService {
   const FtpDownloadService();
@@ -15,17 +17,30 @@ class FtpDownloadService {
   Future<int?> fetchRemoteSize({
     required String ftpUri,
     required SoftEggSettings settings,
+    PackagingCancellationToken? cancellationToken,
   }) async {
     final target = _parseRemoteTarget(ftpUri, settings);
     final client = _createClient(settings, target.host);
+    var cancelled = false;
+    final subscription = cancellationToken?.onCancel(() {
+      cancelled = true;
+      unawaited(_safeDisconnect(client));
+    });
     try {
+      cancellationToken?.throwIfCancelled();
       await client.connect();
+      cancellationToken?.throwIfCancelled();
       await _changeToParentDirectory(client, target.absolutePath);
+      cancellationToken?.throwIfCancelled();
       final size = await client.sizeFile(target.fileName);
       return size >= 0 ? size : null;
     } on FTPConnectException {
+      if (cancelled || cancellationToken?.isCancelled == true) {
+        throw const PackagingCancelledException();
+      }
       return null;
     } finally {
+      subscription?.dispose();
       await _safeDisconnect(client);
     }
   }
@@ -34,6 +49,7 @@ class FtpDownloadService {
     required String ftpUri,
     required File destinationFile,
     required SoftEggSettings settings,
+    PackagingCancellationToken? cancellationToken,
     void Function(
       double progress,
       int receivedBytes,
@@ -51,11 +67,17 @@ class FtpDownloadService {
     Object? lastError;
 
     for (var attempt = 1; attempt <= _maxDownloadAttempts; attempt++) {
+      cancellationToken?.throwIfCancelled();
       if (await destinationFile.exists()) {
         await destinationFile.delete();
       }
 
       final client = _createClient(settings, target.host);
+      var cancelled = false;
+      final subscription = cancellationToken?.onCancel(() {
+        cancelled = true;
+        unawaited(_safeDisconnect(client));
+      });
       final stopwatch = Stopwatch()..start();
       var lastBytes = 0;
       var lastElapsedMs = 0;
@@ -64,8 +86,11 @@ class FtpDownloadService {
       var lastReportedMs = 0;
 
       try {
+        cancellationToken?.throwIfCancelled();
         await client.connect();
+        cancellationToken?.throwIfCancelled();
         await _changeToParentDirectory(client, target.absolutePath);
+        cancellationToken?.throwIfCancelled();
         final totalBytes = await client.sizeFile(target.fileName);
         onProgress?.call(0, 0, totalBytes > 0 ? totalBytes : 0, 0);
 
@@ -87,6 +112,7 @@ class FtpDownloadService {
             if (!shouldEmit) {
               return;
             }
+            cancellationToken?.throwIfCancelled();
             lastReportedBytes = receivedBytes;
             lastReportedProgress = progress;
             lastReportedMs = elapsedMs;
@@ -95,9 +121,17 @@ class FtpDownloadService {
         );
 
         if (!downloaded) {
-          throw FtpDownloadException('FTP 다운로드에 실패했습니다: ${target.absolutePath}');
+          if (cancelled || cancellationToken?.isCancelled == true) {
+            throw const PackagingCancelledException();
+          }
+          throw FtpDownloadException(
+            'FTP 다운로드에 실패했습니다: ${target.absolutePath}',
+          );
         }
         if (!await destinationFile.exists()) {
+          if (cancelled || cancellationToken?.isCancelled == true) {
+            throw const PackagingCancelledException();
+          }
           throw const FtpDownloadException('다운로드 파일이 생성되지 않았습니다.');
         }
 
@@ -105,25 +139,47 @@ class FtpDownloadService {
         final resolvedTotal = totalBytes > 0 ? totalBytes : size;
         onProgress?.call(100, size, resolvedTotal, 0);
         return;
+      } on PackagingCancelledException {
+        if (await destinationFile.exists()) {
+          await destinationFile.delete();
+        }
+        rethrow;
       } on FTPConnectException catch (error) {
+        if (cancelled || cancellationToken?.isCancelled == true) {
+          if (await destinationFile.exists()) {
+            await destinationFile.delete();
+          }
+          throw const PackagingCancelledException();
+        }
         lastError = FtpDownloadException(
           _normalizeFtpError(error, target.absolutePath),
         );
       } on SocketException catch (error) {
-        lastError = FtpDownloadException(
-          'FTP 소켓 연결에 실패했습니다: ${error.message}',
-        );
+        if (cancelled || cancellationToken?.isCancelled == true) {
+          if (await destinationFile.exists()) {
+            await destinationFile.delete();
+          }
+          throw const PackagingCancelledException();
+        }
+        lastError = FtpDownloadException('FTP 소켓 연결에 실패했습니다: ${error.message}');
       } on FtpDownloadException catch (error) {
+        if (cancelled || cancellationToken?.isCancelled == true) {
+          if (await destinationFile.exists()) {
+            await destinationFile.delete();
+          }
+          throw const PackagingCancelledException();
+        }
         lastError = error;
       } finally {
+        subscription?.dispose();
         await _safeDisconnect(client);
       }
 
+      if (cancellationToken?.isCancelled == true) {
+        throw const PackagingCancelledException();
+      }
       if (attempt < _maxDownloadAttempts) {
-        onRetry?.call(
-          attempt + 1,
-          lastError.toString(),
-        );
+        onRetry?.call(attempt + 1, lastError.toString());
         await Future<void>.delayed(Duration(milliseconds: 400 * attempt));
       }
     }

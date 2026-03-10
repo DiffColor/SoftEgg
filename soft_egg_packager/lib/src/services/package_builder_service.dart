@@ -6,6 +6,7 @@ import 'package:soft_egg_packager/src/models/packaging_models.dart';
 import 'package:soft_egg_packager/src/services/checksum_service.dart';
 import 'package:soft_egg_packager/src/services/ftp_download_service.dart';
 import 'package:soft_egg_packager/src/services/local_settings_service.dart';
+import 'package:soft_egg_packager/src/services/packaging_cancellation.dart';
 
 typedef PackagingProgressCallback =
     void Function(PackagingProgressUpdate update);
@@ -50,6 +51,7 @@ class PackageBuilderService {
     required RemoteSoftwarePackage softwarePackage,
     required List<RemoteSoftwareBinary> selectedDependencies,
     required PackagingProgressCallback onProgress,
+    PackagingCancellationToken? cancellationToken,
   }) async {
     final blocker = settings.packagingBlocker;
     if (blocker != null) {
@@ -64,6 +66,7 @@ class PackageBuilderService {
 
     final tempRoot = await Directory.systemTemp.createTemp('softegg_build_');
     try {
+      cancellationToken?.throwIfCancelled();
       final exportDirectory = await _prepareExportDirectory(settings);
       final allArtifacts = <RemoteSoftwareBinary>[
         softwarePackage.mainBinary,
@@ -73,6 +76,7 @@ class PackageBuilderService {
         binaries: allArtifacts,
         settings: settings,
         onProgress: onProgress,
+        cancellationToken: cancellationToken,
       );
       final artifactSlices = _buildArtifactSlices(
         binaries: allArtifacts,
@@ -98,20 +102,24 @@ class PackageBuilderService {
           clearMetrics: true,
         ),
       );
+      cancellationToken?.throwIfCancelled();
 
       final mainFile = await _downloadArtifact(
         binary: softwarePackage.mainBinary,
         destinationDirectory: mainDirectory,
         settings: settings,
-        progressStart: artifactSlices[softwarePackage.mainBinary.uri.trim()]!.$1,
+        progressStart:
+            artifactSlices[softwarePackage.mainBinary.uri.trim()]!.$1,
         progressEnd: artifactSlices[softwarePackage.mainBinary.uri.trim()]!.$2,
         onProgress: onProgress,
         labelPrefix: '메인 바이너리',
+        cancellationToken: cancellationToken,
       );
 
       final dependencyArtifacts = <PackagingArtifactRecord>[];
       if (selectedDependencies.isNotEmpty) {
         for (var index = 0; index < selectedDependencies.length; index++) {
+          cancellationToken?.throwIfCancelled();
           final dependency = selectedDependencies[index];
           final dependencySlice = artifactSlices[dependency.uri.trim()]!;
           final artifact = await _downloadArtifact(
@@ -122,6 +130,7 @@ class PackageBuilderService {
             progressEnd: dependencySlice.$2,
             onProgress: onProgress,
             labelPrefix: '의존성 ${index + 1}/${selectedDependencies.length}',
+            cancellationToken: cancellationToken,
           );
           dependencyArtifacts.add(artifact);
         }
@@ -145,6 +154,7 @@ class PackageBuilderService {
       );
       final packageFilePath = p.join(exportDirectory.path, packageFileName);
       final tempPackageFilePath = p.join(tempRoot.path, packageFileName);
+      cancellationToken?.throwIfCancelled();
       await _ensurePackageFileWritable(packageFilePath);
 
       onProgress(
@@ -169,6 +179,7 @@ class PackageBuilderService {
         selectedPackage: softwarePackage,
       );
       await manifestFile.writeAsString(result.toPrettyManifestJson());
+      cancellationToken?.throwIfCancelled();
 
       onProgress(
         const PackagingProgressUpdate(
@@ -187,13 +198,13 @@ class PackageBuilderService {
           payloadRoot,
           includeDirName: false,
           onProgress: (progress) {
+            cancellationToken?.throwIfCancelled();
             onProgress(
               PackagingProgressUpdate(
                 progress: (0.985 + (progress * 0.01)).clamp(0.985, 0.995),
                 task: '.segg 생성 중',
                 level: 'INFO',
-                message:
-                    '아카이브 구성 ${((progress * 100).clamp(0, 100)).round()}%',
+                message: '아카이브 구성 ${((progress * 100).clamp(0, 100)).round()}%',
                 loggable: false,
                 clearMetrics: true,
               ),
@@ -226,6 +237,7 @@ class PackageBuilderService {
         ),
       );
 
+      cancellationToken?.throwIfCancelled();
       await _placePackageFile(
         sourcePath: tempPackageFilePath,
         destinationPath: packageFilePath,
@@ -255,6 +267,8 @@ class PackageBuilderService {
         ),
       );
       return completedResult;
+    } on PackagingCancelledException catch (error) {
+      throw PackageBuildException(error.message);
     } finally {
       if (await tempRoot.exists()) {
         await tempRoot.delete(recursive: true);
@@ -354,6 +368,7 @@ class PackageBuilderService {
     required List<RemoteSoftwareBinary> binaries,
     required SoftEggSettings settings,
     required PackagingProgressCallback onProgress,
+    PackagingCancellationToken? cancellationToken,
   }) async {
     final sizeMap = <String, int?>{};
     if (binaries.isEmpty) {
@@ -361,6 +376,7 @@ class PackageBuilderService {
     }
 
     for (var index = 0; index < binaries.length; index++) {
+      cancellationToken?.throwIfCancelled();
       final binary = binaries[index];
       final uri = binary.uri.trim();
       final progress = 0.03 + (0.04 * ((index + 1) / binaries.length));
@@ -377,6 +393,7 @@ class PackageBuilderService {
       sizeMap[uri] = await _ftpDownloadService.fetchRemoteSize(
         ftpUri: binary.uri,
         settings: settings,
+        cancellationToken: cancellationToken,
       );
     }
     return sizeMap;
@@ -430,7 +447,9 @@ class PackageBuilderService {
     required double progressEnd,
     required PackagingProgressCallback onProgress,
     required String labelPrefix,
+    PackagingCancellationToken? cancellationToken,
   }) async {
+    cancellationToken?.throwIfCancelled();
     final safeName = _uniqueSanitizedFileName(
       destinationDirectory.path,
       binary.fileName,
@@ -451,6 +470,7 @@ class PackageBuilderService {
       ftpUri: binary.uri,
       destinationFile: file,
       settings: settings,
+      cancellationToken: cancellationToken,
       onRetry: (attempt, reason) {
         onProgress(
           PackagingProgressUpdate(
@@ -494,6 +514,7 @@ class PackageBuilderService {
     final isValid = await _checksumService.verifyFile(
       file,
       binary.checksum,
+      cancellationToken: cancellationToken,
       onProgress: (progress, processedBytes, totalBytes) {
         final scaled =
             downloadEnd + ((progressEnd - downloadEnd) * (progress / 100));

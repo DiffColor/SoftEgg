@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:soft_egg_packager/src/services/packaging_cancellation.dart';
+
 class ChecksumService {
   static final BigInt _prime1 = BigInt.parse('11400714785074694791');
   static final BigInt _prime2 = BigInt.parse('14029467366897019727');
@@ -14,12 +16,14 @@ class ChecksumService {
     File file, {
     void Function(double progress, int processedBytes, int totalBytes)?
     onProgress,
+    PackagingCancellationToken? cancellationToken,
   }) async {
     final totalBytes = await file.length();
     final hash = await _digestStream(
       file.openRead(),
       totalBytes: totalBytes,
       onProgress: onProgress,
+      cancellationToken: cancellationToken,
     );
     return hash.toRadixString(16).padLeft(16, '0');
   }
@@ -29,12 +33,17 @@ class ChecksumService {
     String expectedChecksum, {
     void Function(double progress, int processedBytes, int totalBytes)?
     onProgress,
+    PackagingCancellationToken? cancellationToken,
   }) async {
     final expected = expectedChecksum.trim().toLowerCase();
     if (expected.isEmpty) {
       return true;
     }
-    final computed = await computeXxHash64(file, onProgress: onProgress);
+    final computed = await computeXxHash64(
+      file,
+      onProgress: onProgress,
+      cancellationToken: cancellationToken,
+    );
     return computed == expected;
   }
 
@@ -43,6 +52,7 @@ class ChecksumService {
     required int totalBytes,
     void Function(double progress, int processedBytes, int totalBytes)?
     onProgress,
+    PackagingCancellationToken? cancellationToken,
   }) async {
     final tail = Uint8List(32);
     var tailLength = 0;
@@ -56,6 +66,7 @@ class ChecksumService {
     var v4 = (-_prime1).toUnsigned(64);
 
     await for (final chunk in stream) {
+      cancellationToken?.throwIfCancelled();
       totalLength += BigInt.from(chunk.length);
       processedBytes += chunk.length;
       var offset = 0;
@@ -98,6 +109,7 @@ class ChecksumService {
             processedBytes == totalBytes ||
             processedBytes - lastReportedBytes >= (256 * 1024);
         if (shouldReport) {
+          cancellationToken?.throwIfCancelled();
           lastReportedBytes = processedBytes;
           onProgress(
             ((processedBytes / totalBytes) * 100).clamp(0, 100).toDouble(),
@@ -107,6 +119,8 @@ class ChecksumService {
         }
       }
     }
+
+    cancellationToken?.throwIfCancelled();
 
     BigInt hash;
     if (hadStripe) {

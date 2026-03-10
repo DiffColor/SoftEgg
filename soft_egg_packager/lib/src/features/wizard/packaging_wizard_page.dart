@@ -13,6 +13,7 @@ import 'package:soft_egg_packager/src/services/checksum_service.dart';
 import 'package:soft_egg_packager/src/services/ftp_download_service.dart';
 import 'package:soft_egg_packager/src/services/local_settings_service.dart';
 import 'package:soft_egg_packager/src/services/package_builder_service.dart';
+import 'package:soft_egg_packager/src/services/packaging_cancellation.dart';
 import 'package:soft_egg_packager/src/theme/app_fonts.dart';
 
 class PackagingWizardPage extends StatefulWidget {
@@ -41,6 +42,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
   final List<_ToastNotice> _toastNotices = <_ToastNotice>[];
   final List<Timer> _toastTimers = <Timer>[];
   Timer? _completionAdvanceTimer;
+  PackagingCancellationToken? _packagingCancellationToken;
 
   late final PackageBuilderService _packageBuilderService =
       PackageBuilderService(
@@ -54,6 +56,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
   bool _isCatalogLoading = false;
   bool _isCatalogServerChecking = false;
   bool _isPackagingRunning = false;
+  bool _isStopRequested = false;
   double _packagingProgress = 0;
   String _currentTaskLabel = '대기 중';
   Duration _elapsed = Duration.zero;
@@ -344,9 +347,12 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
     }
 
     _completionAdvanceTimer?.cancel();
+    final cancellationToken = PackagingCancellationToken();
     setState(() {
       _currentStep = 2;
       _isPackagingRunning = true;
+      _isStopRequested = false;
+      _packagingCancellationToken = cancellationToken;
       _packagingProgress = 0.01;
       _currentTaskLabel = '작업 시작';
       _packagingStartedAt = DateTime.now();
@@ -401,6 +407,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             _appendLog(update.level, update.message);
           }
         },
+        cancellationToken: cancellationToken,
       );
 
       if (!mounted) {
@@ -409,6 +416,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       setState(() {
         _packagingResult = result;
         _isPackagingRunning = false;
+        _isStopRequested = false;
+        _packagingCancellationToken = null;
         _packagingProgress = 1;
         _currentTaskLabel = '패키징 완료';
         _currentProcessedBytes = null;
@@ -426,27 +435,42 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       if (!mounted) {
         return;
       }
+      final wasCancelled = error.message == '작업이 중단되었습니다.';
       setState(() {
+        _currentStep = wasCancelled ? 1 : 2;
         _isPackagingRunning = false;
-        _packagingError = error.message;
-        _currentTaskLabel = '패키징 실패';
+        _isStopRequested = false;
+        _packagingCancellationToken = null;
+        _packagingError = wasCancelled ? null : error.message;
+        _currentTaskLabel = wasCancelled ? '대기 중' : '패키징 실패';
+        _packagingProgress = wasCancelled ? 0 : _packagingProgress;
+        _packagingStartedAt = wasCancelled ? null : _packagingStartedAt;
+        _elapsed = wasCancelled ? Duration.zero : _elapsed;
         _currentProcessedBytes = null;
         _currentTotalBytes = null;
         _currentBytesPerSecond = null;
+        _packagingResult = wasCancelled ? null : _packagingResult;
       });
-      _appendLog('ERROR', error.message);
+      _appendLog(wasCancelled ? 'WARN' : 'ERROR', error.message);
       _showTopNotification(
-        title: '패키징 실패',
+        title: wasCancelled ? '작업 중단' : '패키징 실패',
         message: error.message,
-        icon: Icons.error_outline_rounded,
-        accent: const Color(0xFFEF4444),
+        icon: wasCancelled
+            ? Icons.stop_circle_outlined
+            : Icons.error_outline_rounded,
+        accent: wasCancelled
+            ? const Color(0xFFF59E0B)
+            : const Color(0xFFEF4444),
       );
     } catch (error) {
       if (!mounted) {
         return;
       }
       setState(() {
+        _currentStep = 2;
         _isPackagingRunning = false;
+        _isStopRequested = false;
+        _packagingCancellationToken = null;
         _packagingError = '패키징 중 예기치 않은 오류가 발생했습니다.';
         _currentTaskLabel = '패키징 실패';
         _currentProcessedBytes = null;
@@ -461,6 +485,25 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
         accent: const Color(0xFFEF4444),
       );
     }
+  }
+
+  void _stopPackaging() {
+    if (!_isPackagingRunning || _isStopRequested) {
+      return;
+    }
+    _completionAdvanceTimer?.cancel();
+    _packagingCancellationToken?.cancel();
+    setState(() {
+      _isStopRequested = true;
+      _currentTaskLabel = '작업 중단 요청';
+    });
+    _appendLog('WARN', '사용자가 작업 중단을 요청했습니다.');
+    _showTopNotification(
+      title: '중단 요청 접수',
+      message: '진행 중인 작업을 안전하게 중단하고 있습니다.',
+      icon: Icons.stop_circle_outlined,
+      accent: const Color(0xFFF59E0B),
+    );
   }
 
   void _appendLog(String level, String message) {
@@ -619,6 +662,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       _selectedDependencyKeys = <String>{};
       _remoteSizeCache.clear();
       _remoteSizeLoadingKeys.clear();
+      _packagingCancellationToken = null;
+      _isStopRequested = false;
       _packagingProgress = 0;
       _currentTaskLabel = '대기 중';
       _packagingStartedAt = null;
@@ -636,6 +681,60 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
     }
   }
 
+  void _goToPreviousStep() {
+    if (_isPackagingRunning) {
+      return;
+    }
+    _completionAdvanceTimer?.cancel();
+    if (_currentStep == 1) {
+      setState(() {
+        _currentStep = 0;
+        _catalogError = null;
+        _packagingError = null;
+      });
+      return;
+    }
+    if (_currentStep == 2) {
+      setState(() {
+        _currentStep = 1;
+        _packagingCancellationToken = null;
+        _isStopRequested = false;
+        _packagingProgress = 0;
+        _currentTaskLabel = '대기 중';
+        _packagingStartedAt = null;
+        _elapsed = Duration.zero;
+        _currentProcessedBytes = null;
+        _currentTotalBytes = null;
+        _currentBytesPerSecond = null;
+        _packagingError = null;
+        _packagingResult = null;
+        _logLines.clear();
+      });
+    }
+  }
+
+  void _startNewPackageFromCurrentAccess() {
+    if (_isPackagingRunning) {
+      return;
+    }
+    _completionAdvanceTimer?.cancel();
+    setState(() {
+      _currentStep = 1;
+      _packagingCancellationToken = null;
+      _isStopRequested = false;
+      _packagingProgress = 0;
+      _currentTaskLabel = '대기 중';
+      _packagingStartedAt = null;
+      _elapsed = Duration.zero;
+      _currentProcessedBytes = null;
+      _currentTotalBytes = null;
+      _currentBytesPerSecond = null;
+      _packagingError = null;
+      _packagingResult = null;
+      _logLines.clear();
+    });
+  }
+
   void _scheduleCompletionAdvance() {
     _completionAdvanceTimer?.cancel();
     _completionAdvanceTimer = Timer(const Duration(seconds: 2), () {
@@ -646,25 +745,6 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
         _currentStep = 3;
       });
     });
-  }
-
-  void _abortWizard() {
-    if (_isPackagingRunning) {
-      _showTopNotification(
-        title: '취소 불가',
-        message: '현재 다운로드/압축 작업이 진행 중입니다. 완료 후 초기화해 주십시오.',
-        icon: Icons.warning_amber_rounded,
-        accent: const Color(0xFFF59E0B),
-      );
-      return;
-    }
-    _resetWizard();
-    _showTopNotification(
-      title: '초기화 완료',
-      message: '위저드를 초기 상태로 되돌렸습니다.',
-      icon: Icons.restart_alt_rounded,
-      accent: const Color(0xFF60A5FA),
-    );
   }
 
   Future<void> _copyExportPath() async {
@@ -948,29 +1028,6 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
 
     _toastTimers.add(hideTimer);
     _toastTimers.add(removeTimer);
-  }
-
-  Future<void> _handlePrimaryAction() async {
-    if (_currentStep == 0) {
-      await _authorizePartnerCode();
-      return;
-    }
-    if (_currentStep == 1) {
-      await _startPackaging();
-      return;
-    }
-    if (_currentStep == 2) {
-      if (_isPackagingRunning) {
-        return;
-      }
-      if (_packagingResult != null) {
-        setState(() => _currentStep = 3);
-        return;
-      }
-      await _startPackaging();
-      return;
-    }
-    _resetWizard();
   }
 
   @override
@@ -1995,7 +2052,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                       ),
                     ),
                     child: Text(
-                      '계속 진행을 누르면 선택한 구성으로 패키지 생성을 시작합니다.',
+                      'Start Packaging을 누르면 선택한 구성으로 패키지 생성을 시작합니다.',
                       style: AppFonts.sourceSans3(
                         color: const Color(0xFFBFDBFE),
                         fontSize: 13,
@@ -2266,10 +2323,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                   children: [
                     Row(
                       children: [
-                        _buildPanelTitle(
-                          Icons.terminal_rounded,
-                          '작업 내역',
-                        ),
+                        _buildPanelTitle(Icons.terminal_rounded, '작업 내역'),
                         const Spacer(),
                         TextButton.icon(
                           onPressed: _logLines.isEmpty ? null : _copyLogs,
@@ -2368,8 +2422,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             state: _resolveTaskDrivenStageState(
               isActive: _currentTaskLabel.startsWith('메인 바이너리'),
               isDone:
-                  progress >= 0.05 &&
-                  !_currentTaskLabel.startsWith('메인 바이너리'),
+                  progress >= 0.05 && !_currentTaskLabel.startsWith('메인 바이너리'),
             ),
           ),
           _stageTile(
@@ -2390,9 +2443,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             subtitle: '설치에 필요한 정보를 정리합니다',
             state: _resolveTaskDrivenStageState(
               isActive: _currentTaskLabel.contains('매니페스트'),
-              isDone:
-                  progress >= 0.975 &&
-                  !_currentTaskLabel.contains('매니페스트'),
+              isDone: progress >= 0.975 && !_currentTaskLabel.contains('매니페스트'),
             ),
           ),
           _stageTile(
@@ -2400,8 +2451,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
             subtitle: '최종 패키지 파일을 만듭니다',
             state: _resolveTaskDrivenStageState(
               isActive: _currentTaskLabel.contains('.segg'),
-              isDone:
-                  progress >= 0.995 && !_currentTaskLabel.contains('.segg'),
+              isDone: progress >= 0.995 && !_currentTaskLabel.contains('.segg'),
             ),
           ),
           _stageTile(
@@ -2425,8 +2475,8 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
         : _currentTotalBytes != null && _currentTotalBytes! > 0
         ? '${_formatBytes(_currentProcessedBytes!)} / ${_formatBytes(_currentTotalBytes!)}'
         : _formatBytes(_currentProcessedBytes!);
-    final transferSpeed = _currentBytesPerSecond == null ||
-            _currentBytesPerSecond! <= 0
+    final transferSpeed =
+        _currentBytesPerSecond == null || _currentBytesPerSecond! <= 0
         ? '-'
         : '${_formatBytes(_currentBytesPerSecond!.round())}/s';
     return _buildPanel(
@@ -2656,9 +2706,7 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
                       _buildPanel(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            
-                          ],
+                          children: [],
                         ),
                       ),
                     ],
@@ -2699,68 +2747,83 @@ class _PackagingWizardPageState extends State<PackagingWizardPage> {
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Row(
         children: [
-          if (_currentStep == 1 || _currentStep == 2) ...[
+          if (_currentStep == 1)
             OutlinedButton.icon(
-              onPressed: _isPackagingRunning ? null : _abortWizard,
+              onPressed: _isCatalogLoading ? null : _goToPreviousStep,
+              icon: const Icon(Icons.arrow_back_rounded),
+              label: const Text('Previous Step'),
+            ),
+          if (_currentStep == 3)
+            OutlinedButton.icon(
+              onPressed: _isPackagingRunning ? null : _resetWizard,
               icon: const Icon(Icons.first_page_rounded),
-              label: const Text('Back to Start'),
+              label: const Text('Back to Step 1'),
             ),
-          ],
           const Spacer(),
-          FilledButton.icon(
-            onPressed: _resolvePrimaryActionEnabled()
-                ? _handlePrimaryAction
-                : null,
-            icon: Icon(_resolvePrimaryIcon()),
-            label: Text(_resolvePrimaryLabel()),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          if (_currentStep == 0)
+            FilledButton.icon(
+              onPressed:
+                  _isPartnerCodeComplete &&
+                      !_isCatalogLoading &&
+                      !_isSettingsLoading
+                  ? _authorizePartnerCode
+                  : null,
+              icon: const Icon(Icons.lock_open_rounded),
+              label: Text(
+                _isCatalogLoading ? 'Authorizing...' : 'Authorize Access',
+              ),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
+              ),
             ),
-          ),
+          if (_currentStep == 1)
+            FilledButton.icon(
+              onPressed: !_isPackagingRunning && _canStartPackaging
+                  ? _startPackaging
+                  : null,
+              icon: const Icon(Icons.arrow_forward_rounded),
+              label: const Text('Start Packaging'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
+              ),
+            ),
+          if (_currentStep == 2)
+            FilledButton.icon(
+              onPressed: _isPackagingRunning && !_isStopRequested
+                  ? _stopPackaging
+                  : null,
+              icon: const Icon(Icons.stop_rounded),
+              label: Text(_isStopRequested ? 'Stopping...' : 'Stop Packaging'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
+              ),
+            ),
+          if (_currentStep == 3)
+            FilledButton.icon(
+              onPressed: _isPackagingRunning
+                  ? null
+                  : _startNewPackageFromCurrentAccess,
+              icon: const Icon(Icons.add_box_outlined),
+              label: const Text('Start New Package'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
+              ),
+            ),
         ],
       ),
     );
-  }
-
-  bool _resolvePrimaryActionEnabled() {
-    if (_currentStep == 0) {
-      return _isPartnerCodeComplete &&
-          !_isCatalogLoading &&
-          !_isSettingsLoading;
-    }
-    if (_currentStep == 1) {
-      return !_isPackagingRunning && _canStartPackaging;
-    }
-    if (_currentStep == 2) {
-      return _isPackagingRunning ? false : true;
-    }
-    return !_isPackagingRunning;
-  }
-
-  String _resolvePrimaryLabel() {
-    if (_currentStep == 0) {
-      return _isCatalogLoading ? 'Authorizing...' : 'Authorize Access';
-    }
-    if (_currentStep == 1) {
-      return 'Start Packaging';
-    }
-    if (_currentStep == 2) {
-      if (_isPackagingRunning) {
-        return 'Packaging...';
-      }
-      return _packagingResult != null ? 'Continue' : 'Retry Packaging';
-    }
-    return 'Start New Package';
-  }
-
-  IconData _resolvePrimaryIcon() {
-    if (_currentStep == 0) {
-      return Icons.lock_open_rounded;
-    }
-    if (_currentStep == 3) {
-      return Icons.add_box_outlined;
-    }
-    return Icons.arrow_forward_rounded;
   }
 
   Widget _buildPanel({required Widget child}) {
