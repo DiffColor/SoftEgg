@@ -10,17 +10,16 @@ class CatalogRepository {
   Future<CompanyCatalog> fetchCatalog(String companyCode) async {
     final catalog = await _apiClient.fetchCatalog(companyCode);
     if (catalog.softwarePackages.isEmpty) {
-      throw CatalogException(
-        message: '할당된 소프트웨어가 없습니다. companyCode=$companyCode, total=0, desktop=0, os=[]',
+      throw const CatalogException(
+        message: '할당된 소프트웨어가 없습니다.',
         error: 'no_software_assigned',
         requestId: '',
         statusCode: 404,
       );
     }
     if (catalog.desktopPackages.isEmpty) {
-      throw CatalogException(
-        message:
-            '데스크톱 패키징 가능한 소프트웨어가 없습니다. companyCode=$companyCode, ${catalog.packageSummary}',
+      throw const CatalogException(
+        message: '데스크톱 패키징 가능한 소프트웨어가 없습니다.',
         error: 'no_desktop_software',
         requestId: '',
         statusCode: 404,
